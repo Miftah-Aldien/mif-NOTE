@@ -9,30 +9,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Scintilla source
+      - name: Download Scintilla (link resmi, 2 cadangan)
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          Invoke-WebRequest -Uri "https://github.com/mirror/scintilla/archive/refs/tags/v5.4.1.zip" -OutFile scintilla.zip
+          $ErrorActionPreference = 'Continue'
+          $ok = $false
+          # Cadangan 1 - situs resmi Scintilla (paling bisa dipercaya)
+          try {
+            Invoke-WebRequest -Uri "https://www.scintilla.org/scintilla541.zip" -OutFile scintilla.zip -TimeoutSec 120
+            if ((Get-Item scintilla.zip).Length -gt 100000) { $ok = $true; Write-Host "Download dari scintilla.org BERHASIL" }
+          } catch { Write-Host "scintilla.org gagal, coba GitHub..." }
+          # Cadangan 2 - GitHub resmi scintillaorg (BUKAN mirror/scintilla, itu yang kemarin salah)
+          if (-not $ok) {
+            Invoke-WebRequest -Uri "https://github.com/scintillaorg/scintilla/archive/refs/tags/v5.4.1.zip" -OutFile scintilla.zip -TimeoutSec 120
+            Write-Host "Download dari github.com/scintillaorg BERHASIL"
+          }
           Expand-Archive scintilla.zip -DestinationPath scintilla-src -Force
           Get-ChildItem scintilla-src | Select-Object Name
+          # Cari folder yang ada Scintilla.h-nya, apa pun namanya
+          $inc = Get-ChildItem -Recurse -Path scintilla-src -Filter "Scintilla.h" | Select-Object -First 1
+          Write-Host "Scintilla.h ketemu di: $($inc.FullName)"
+          $root = Split-Path (Split-Path $inc.FullName -Parent) -Parent
+          Write-Host "SCINTILLA_ROOT=$root"
+          echo "SCINTILLA_ROOT=$root" >> $env:GITHUB_ENV
 
       - name: Build SciLexer.dll (mesin Notepad++)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $proj = Get-ChildItem -Recurse -Path scintilla-src -Filter "SciLexer.vcxproj" | Select-Object -First 1
+          Write-Host "SciLexer.vcxproj: $($proj.FullName)"
           $msbuild = Get-ChildItem "C:/Program Files/Microsoft Visual Studio/*/Enterprise/MSBuild/Current/Bin/MSBuild.exe" | Select-Object -First 1
           if (-not $msbuild) { $msbuild = Get-ChildItem "C:/Program Files/Microsoft Visual Studio/*/Community/MSBuild/Current/Bin/MSBuild.exe" | Select-Object -First 1 }
           Write-Host "MSBuild: $($msbuild.FullName)"
-          & $msbuild.FullName scintilla-src/scintilla-5.4.1/win32/SciLexer.vcxproj /p:Configuration=Release /p:Platform=x64
-          Get-ChildItem scintilla-src/scintilla-5.4.1/bin -Filter "*.dll" | Select-Object FullName
+          & $msbuild.FullName $proj.FullName /p:Configuration=Release /p:Platform=x64
+          Get-ChildItem -Recurse -Path scintilla-src -Filter "SciLexer.dll" | Select-Object FullName
 
       - name: Configure CMake
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cmake -S . -B build -A x64 -DSCINTILLA_ROOT="$PWD/scintilla-src/scintilla-5.4.1"
-          Get-ChildItem build
+          Write-Host "SCINTILLA_ROOT=$env:SCINTILLA_ROOT"
+          cmake -S . -B build -A x64 "-DSCINTILLA_ROOT=$env:SCINTILLA_ROOT"
 
       - name: Build mif-NOTE
         shell: pwsh
@@ -44,7 +62,8 @@ jobs:
       - name: Copy SciLexer.dll next to EXE
         shell: pwsh
         run: |
-          Copy-Item scintilla-src/scintilla-5.4.1/bin/SciLexer.dll build/Release/SciLexer.dll -Force
+          $dll = Get-ChildItem -Recurse -Path scintilla-src -Filter "SciLexer.dll" | Select-Object -First 1
+          Copy-Item $dll.FullName build/Release/SciLexer.dll -Force
           Get-ChildItem build/Release
 
       - name: Upload EXE
