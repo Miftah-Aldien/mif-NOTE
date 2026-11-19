@@ -1,2 +1,3 @@
-mif-NOTE C++ - RichEdit bawaan Windows, tanpa download.
-Build: GitHub Actions -> artifact mif-note-cpp -> Mif-NOTE.exe (1 file saja, tanpa DLL).
+mif-NOTE C++ - RichEdit bawaan Windows.
+TOOLBAR FONT: Font + Size di toolbar atas, tanpa jendela ChooseFont.
+Build x64 dulu untuk tes Pavilion, baru nanti ganti x86 untuk EeePC.
