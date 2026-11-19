@@ -8,10 +8,10 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: Configure CMake
+      - name: Configure CMake (Win32 / x86 untuk EeePC 32-bit)
         shell: pwsh
-        run: cmake -S . -B build -A x64
-      - name: Build mif-NOTE
+        run: cmake -S . -B build -A Win32
+      - name: Build mif-NOTE (x86)
         shell: pwsh
         run: |
           cmake --build build --config Release
@@ -19,5 +19,5 @@ jobs:
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: mif-note-cpp
+          name: mif-note-cpp-x86
           path: build/Release/Mif-NOTE.exe
