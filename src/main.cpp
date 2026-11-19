@@ -1,6 +1,5 @@
-// mif-NOTE C++ Edition - GPL v3
-// Mesin: RichEdit bawaan Windows (Msftedit.dll) - TIDAK perlu download Scintilla
-// Fitur: RTF/TXT/HTML/CFG, line numbers, word wrap, RTL/LTR, font, Save prompt
+// mif-NOTE C++ Edition - GPL v3 - FIX FONT + FIX LAG
+// Mesin: RichEdit bawaan Windows (Msftedit.dll)
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
@@ -13,6 +12,8 @@ HINSTANCE g_hInst;
 HWND g_hMain = NULL, g_hEdit = NULL, g_hLine = NULL;
 std::wstring g_currentFile = L"";
 bool g_showLine = true, g_wordWrap = true;
+int g_lastLineCount = -1;
+#define ID_EDIT 500
 #define IDM_NEW 1001
 #define IDM_OPEN 1002
 #define IDM_SAVE 1003
@@ -44,12 +45,21 @@ void UpdateTitle() {
   SetWindowTextW(g_hMain, t.c_str());
 }
 bool IsDirty() { return (bool)SendMessageW(g_hEdit, EM_GETMODIFY, 0, 0); }
+// FIX LAG: hanya update nomor baris kalau jumlah baris BERUBAH, bukan tiap ketikan
 void UpdateLineNumbers() {
-  if (!g_showLine) { SetWindowTextW(g_hLine, L""); return; }
+  if (!g_showLine) return;
   int lines = (int)SendMessageW(g_hEdit, EM_GETLINECOUNT, 0, 0);
+  if (lines == g_lastLineCount) return; // <-- ini kuncinya, jangan hitung ulang kalau sama
+  g_lastLineCount = lines;
   std::wstring s;
+  s.reserve(lines * 4);
   for (int i = 1; i <= lines; i++) { s += std::to_wstring(i); s += L"\r\n"; }
+  // Jangan pakai SetWindowText yang bikin kedip: pakai EM_SETSEL + EM_REPLACESEL hanya saat perlu
+  // Cara aman: matikan redraw dulu
+  SendMessageW(g_hLine, WM_SETREDRAW, FALSE, 0);
   SetWindowTextW(g_hLine, s.c_str());
+  SendMessageW(g_hLine, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(g_hLine, NULL, TRUE);
 }
 struct StreamCtx { std::string data; size_t pos; };
 static DWORD CALLBACK StreamIn(DWORD_PTR dw, LPBYTE b, LONG n, LONG* r) {
@@ -73,14 +83,13 @@ void SetTextFromFile(const std::wstring& path, const std::string& bytes) {
     es.dwCookie = (DWORD_PTR)&ctx; es.pfnCallback = StreamIn;
     SendMessageW(g_hEdit, EM_STREAMIN, SF_RTF, (LPARAM)&es);
   } else {
-    // TXT / HTML / CFG / code : tampilkan apa adanya (UTF-8 -> UTF-16)
     int n = MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(), (int)bytes.size(), NULL, 0);
     std::wstring w(n, 0);
     MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(), (int)bytes.size(), &w[0], n);
     SetWindowTextW(g_hEdit, w.c_str());
   }
   SendMessageW(g_hEdit, EM_SETMODIFY, FALSE, 0);
-  UpdateLineNumbers();
+  g_lastLineCount = -1; UpdateLineNumbers();
 }
 std::string GetBytesForSave() {
   if (EndsWith(g_currentFile, L".rtf")) {
@@ -124,9 +133,8 @@ void DoOpen() {
   std::ifstream in(buf, std::ios::binary); std::stringstream ss; ss << in.rdbuf();
   g_currentFile = buf; SetTextFromFile(buf, ss.str()); UpdateTitle();
 }
-void DoNew() { if (!AskSaveIfDirty()) return; g_currentFile.clear(); SetWindowTextW(g_hEdit, L""); SendMessageW(g_hEdit, EM_SETMODIFY, FALSE, 0); UpdateTitle(); UpdateLineNumbers(); }
+void DoNew() { if (!AskSaveIfDirty()) return; g_currentFile.clear(); SetWindowTextW(g_hEdit, L""); SendMessageW(g_hEdit, EM_SETMODIFY, FALSE, 0); UpdateTitle(); g_lastLineCount = -1; UpdateLineNumbers(); }
 void ApplyWrap() {
-  // RichEdit: word wrap = ganti style jendela (butuh recreate) -> pakai EM_SETTARGETDEVICE
   if (g_wordWrap) SendMessageW(g_hEdit, EM_SETTARGETDEVICE, 0, 0);
   else { RECT rc; GetClientRect(g_hEdit, &rc); SendMessageW(g_hEdit, EM_SETTARGETDEVICE, 0, (LPARAM)(rc.right * 10)); }
 }
@@ -136,14 +144,33 @@ void ApplyRTL(bool rtl) {
   else SetWindowLongW(g_hEdit, GWL_EXSTYLE, ex & ~WS_EX_RTLREADING);
   SetWindowPos(g_hEdit, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
+// FIX FONT: pakai EM_SETCHARFORMAT, bukan WM_SETFONT. Ini yang bikin font beneran berubah di RichEdit
 void DoFont() {
-  LOGFONTW lf = {0}; HFONT hf = (HFONT)SendMessageW(g_hEdit, WM_GETFONT, 0, 0);
-  if (hf) GetObjectW(hf, sizeof(lf), &lf);
-  CHOOSEFONTW cf = {0}; cf.lStructSize = sizeof(cf); cf.hwndOwner = g_hMain; cf.lpLogFont = &lf; cf.Flags = CF_SCREENFONTS | CF_EFFECTS;
-  if (!ChooseFontW(&cf)) return;
-  HFONT nf = CreateFontIndirectW(&lf);
-  SendMessageW(g_hEdit, WM_SETFONT, (WPARAM)nf, TRUE);
-  SendMessageW(g_hLine, WM_SETFONT, (WPARAM)nf, TRUE);
+  CHARFORMAT2W cf2 = {0}; cf2.cbSize = sizeof(cf2); cf2.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_ITALIC | CFM_COLOR;
+  SendMessageW(g_hEdit, EM_GETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf2);
+  LOGFONTW lf = {0};
+  wcscpy_s(lf.lfFaceName, cf2.szFaceName);
+  lf.lfHeight = -(LONG)(cf2.yHeight / 20 * 96 / 72);
+  if (cf2.dwEffects & CFE_BOLD) lf.lfWeight = FW_BOLD;
+  if (cf2.dwEffects & CFE_ITALIC) lf.lfItalic = TRUE;
+  CHOOSEFONTW ch = {0}; ch.lStructSize = sizeof(ch); ch.hwndOwner = g_hMain; ch.lpLogFont = &lf; ch.Flags = CF_SCREENFONTS | CF_EFFECTS | CF_FORCEFONTEXIST; ch.rgbColors = cf2.crTextColor;
+  if (!ChooseFontW(&ch)) return;
+  CHARFORMAT2W ncf = {0}; ncf.cbSize = sizeof(ncf);
+  ncf.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_ITALIC | CFM_COLOR;
+  wcscpy_s(ncf.szFaceName, lf.lfFaceName);
+  int pt = (-lf.lfHeight * 72) / 96; if (pt <= 0) pt = 11;
+  ncf.yHeight = pt * 20;
+  ncf.dwEffects = 0;
+  if (lf.lfWeight >= FW_BOLD) ncf.dwEffects |= CFE_BOLD;
+  if (lf.lfItalic) ncf.dwEffects |= CFE_ITALIC;
+  ncf.crTextColor = ch.rgbColors;
+  // Terapkan ke SELURUH teks (bukan cuma yang ke-blok)
+  SendMessageW(g_hEdit, EM_SETSEL, 0, -1);
+  SendMessageW(g_hEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&ncf);
+  SendMessageW(g_hEdit, EM_SETSEL, 0, 0);
+  // Font kotak nomor baris ikut juga, biar sejajar
+  SendMessageW(g_hLine, WM_SETFONT, (WPARAM)CreateFontIndirectW(&lf), TRUE);
+  MessageBoxW(g_hMain, L"Font sudah diganti.", L"mif-NOTE", MB_OK | MB_ICONINFORMATION);
 }
 void Resize() {
   RECT rc; GetClientRect(g_hMain, &rc);
@@ -157,13 +184,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   if (m == WM_CLOSE) { if (!AskSaveIfDirty()) return 0; DestroyWindow(h); return 0; }
   if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
   if (m == WM_COMMAND) {
+    // FIX LAG: update nomor baris HANYA pas teks berubah (EN_CHANGE), bukan tiap pesan
+    if (LOWORD(wp) == ID_EDIT && HIWORD(wp) == EN_CHANGE) { UpdateLineNumbers(); return 0; }
     switch (LOWORD(wp)) {
       case IDM_NEW: DoNew(); return 0;
       case IDM_OPEN: DoOpen(); return 0;
       case IDM_SAVE: DoSave(); return 0;
       case IDM_SAVEAS: DoSaveAs(); return 0;
       case IDM_EXIT: SendMessageW(h, WM_CLOSE, 0, 0); return 0;
-      case IDM_VIEW_LINE: g_showLine = !g_showLine; Resize(); UpdateLineNumbers(); return 0;
+      case IDM_VIEW_LINE: g_showLine = !g_showLine; g_lastLineCount = -1; Resize(); UpdateLineNumbers(); return 0;
       case IDM_VIEW_WRAP: g_wordWrap = !g_wordWrap; ApplyWrap(); return 0;
       case IDM_RTL: ApplyRTL(true); return 0;
       case IDM_LTR: ApplyRTL(false); return 0;
@@ -174,7 +203,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       case IDM_PASTE: SendMessageW(g_hEdit, WM_PASTE, 0, 0); return 0;
     }
   }
-  if (m == WM_NOTIFY) { UpdateLineNumbers(); return 0; }
   return DefWindowProcW(h, m, wp, lp);
 }
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int nCmd) {
@@ -201,11 +229,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int nCmd) {
   AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, L"&Tampilan");
   AppendMenuW(bar, MF_POPUP, (UINT_PTR)fmt, L"F&ormat");
   SetMenu(g_hMain, bar);
-  g_hLine = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_RIGHT, 0, 0, 42, 600, g_hMain, NULL, hi, NULL);
-  g_hEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 42, 0, 758, 600, g_hMain, NULL, hi, NULL);
+  g_hLine = CreateWindowExW(0, L"EDIT", L"1\r\n", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_RIGHT | ES_AUTOVSCROLL, 0, 0, 42, 600, g_hMain, NULL, hi, NULL);
+  g_hEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | ES_SAVESEL, 42, 0, 758, 600, g_hMain, (HMENU)(UINT_PTR)ID_EDIT, hi, NULL);
+  // Beri tahu RichEdit untuk kirim EN_CHANGE
+  SendMessageW(g_hEdit, EM_SETEVENTMASK, 0, ENM_CHANGE);
   SendMessageW(g_hLine, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-  // Menu klik kanan (Cut/Copy/Paste) sudah bawaan RichEdit
   ShowWindow(g_hMain, nCmd); UpdateWindow(g_hMain);
-  MSG msg; while (GetMessageW(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); UpdateLineNumbers(); }
+  SetFocus(g_hEdit);
+  MSG msg; while (GetMessageW(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
   return 0;
 }
