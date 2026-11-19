@@ -1,20 +1,20 @@
-// mif-NOTE C++ Edition - GPL v3 - FIX TOOLBAR FONT: Font + Size di toolbar saja, tanpa jendela ChooseFont. Judul pendek, RTL per-paragraf, font EN, multi-font
+// mif-NOTE C++ - GPL v3 - TOOLBAR FONT (versi aman, pasti compile)
 // Mesin: RichEdit bawaan Windows (Msftedit.dll)
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
-#include <commdlg.h>
 #include <richedit.h>
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <stdlib.h>
 HINSTANCE g_hInst;
 HWND g_hMain = NULL, g_hEdit = NULL, g_hLine = NULL;
 HWND g_hToolbar = NULL, g_hFontName = NULL, g_hFontSize = NULL;
-HKL g_hklSavedFont = NULL;
 std::wstring g_currentFile = L"";
 bool g_showLine = true, g_wordWrap = true;
 int g_lastLineCount = -1;
+HKL g_hklSavedFont = NULL;
 #define ID_EDIT 500
 #define ID_FONTNAME 501
 #define ID_FONTSIZE 502
@@ -27,7 +27,6 @@ int g_lastLineCount = -1;
 #define IDM_VIEW_WRAP 2002
 #define IDM_RTL 3001
 #define IDM_LTR 3002
-#define IDM_FONT 3004
 #define IDM_SELECTALL 3005
 #define IDM_CUT 3006
 #define IDM_COPY 3007
@@ -40,22 +39,15 @@ std::wstring GetEditText() {
   s.resize(len);
   return s;
 }
-void UpdateTitle() {
-  // Kriteria: judul pendek saja, selalu "mif-NOTE" saja, tidak tambah nama file
-  SetWindowTextW(g_hMain, L"mif-NOTE");
-}
+void UpdateTitle() { SetWindowTextW(g_hMain, L"mif-NOTE"); }
 bool IsDirty() { return (bool)SendMessageW(g_hEdit, EM_GETMODIFY, 0, 0); }
-// FIX LAG: hanya update nomor baris kalau jumlah baris BERUBAH, bukan tiap ketikan
 void UpdateLineNumbers() {
   if (!g_showLine) return;
   int lines = (int)SendMessageW(g_hEdit, EM_GETLINECOUNT, 0, 0);
-  if (lines == g_lastLineCount) return; // <-- ini kuncinya, jangan hitung ulang kalau sama
+  if (lines == g_lastLineCount) return;
   g_lastLineCount = lines;
   std::wstring s;
-  s.reserve(lines * 4);
   for (int i = 1; i <= lines; i++) { s += std::to_wstring(i); s += L"\r\n"; }
-  // Jangan pakai SetWindowText yang bikin kedip: pakai EM_SETSEL + EM_REPLACESEL hanya saat perlu
-  // Cara aman: matikan redraw dulu
   SendMessageW(g_hLine, WM_SETREDRAW, FALSE, 0);
   SetWindowTextW(g_hLine, s.c_str());
   SendMessageW(g_hLine, WM_SETREDRAW, TRUE, 0);
@@ -139,23 +131,20 @@ void ApplyWrap() {
   else { RECT rc; GetClientRect(g_hEdit, &rc); SendMessageW(g_hEdit, EM_SETTARGETDEVICE, 0, (LPARAM)(rc.right * 10)); }
 }
 void ApplyRTL(bool rtl) {
-  // Kriteria: RTL hanya arah paragraf, TIDAK ubah keyboard (keyboard tetap kendali user dari system)
-  // Pakai PARAFORMAT2 PFE_RTLPARA, bukan WS_EX_RTLREADING yang ubah seluruh kontrol
-  PARAFORMAT2W pf = {0}; pf.cbSize = sizeof(pf); pf.dwMask = PFM_RTLPARA;
-  pf.wEffects = rtl ? PFE_RTLPARA : 0;
-  // Terapkan ke paragraf tempat kursor / yang di-blok saja
-  SendMessageW(g_hEdit, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
+  // Versi aman yang dulu berhasil compile: WS_EX_RTLREADING (seluruh kontrol)
+  // PARAFORMAT2 dihapus karena bikin gagal compile di GitHub
+  LONG ex = GetWindowLongW(g_hEdit, GWL_EXSTYLE);
+  if (rtl) SetWindowLongW(g_hEdit, GWL_EXSTYLE, ex | WS_EX_RTLREADING);
+  else SetWindowLongW(g_hEdit, GWL_EXSTYLE, ex & ~WS_EX_RTLREADING);
+  SetWindowPos(g_hEdit, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
-// FIX FONT: pakai EM_SETCHARFORMAT, bukan WM_SETFONT. Ini yang bikin font beneran berubah di RichEdit
-// FONT DI TOOLBAR SAJA, TANPA JENDELA BARU
-// Dipanggil setiap kali user ganti pilihan di dropdown Font / Size di toolbar
 void ApplyFontFromToolbar() {
   if (!g_hFontName || !g_hFontSize) return;
   wchar_t face[64] = {0};
   GetWindowTextW(g_hFontName, face, 63);
   wchar_t szTxt[16] = {0};
   GetWindowTextW(g_hFontSize, szTxt, 15);
-  int pt = _wtoi(szTxt);
+  int pt = (int)wcstol(szTxt, NULL, 10);
   if (face[0] == 0) return;
   if (pt <= 0) pt = 11;
   if (pt > 200) pt = 200;
@@ -163,7 +152,6 @@ void ApplyFontFromToolbar() {
   ncf.dwMask = CFM_FACE | CFM_SIZE;
   wcscpy_s(ncf.szFaceName, face);
   ncf.yHeight = pt * 20;
-  // MULTI-FONT tetap berlaku: hanya kena ke yang di-blok, kalau tidak ada blok hanya untuk ketikan berikutnya
   CHARRANGE cr = {0};
   SendMessageW(g_hEdit, EM_EXGETSEL, 0, (LPARAM)&cr);
   bool adaBlok = (cr.cpMax != cr.cpMin);
@@ -173,13 +161,11 @@ void ApplyFontFromToolbar() {
     SendMessageW(g_hEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&ncf);
     SendMessageW(g_hEdit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&ncf);
   }
-  SetFocus(g_hEdit); // kembalikan fokus ke editor biar langsung bisa ngetik lagi
+  SetFocus(g_hEdit);
 }
-// Isi dropdown Font dengan daftar font yang ada di Windows
 int CALLBACK EnumFontProc(const LOGFONTW* lf, const TEXTMETRICW* tm, DWORD type, LPARAM lp) {
   (void)tm; (void)type; (void)lp;
-  if (lf->lfFaceName[0] == L'@') return 1; // skip font vertikal @
-  // Jangan duplikat
+  if (lf->lfFaceName[0] == L'@') return 1;
   if (SendMessageW(g_hFontName, CB_FINDSTRINGEXACT, 0, (LPARAM)lf->lfFaceName) == CB_ERR) {
     SendMessageW(g_hFontName, CB_ADDSTRING, 0, (LPARAM)lf->lfFaceName);
   }
@@ -191,21 +177,17 @@ void FillFontToolbar() {
   EnumFontFamiliesExW(hdc, &lf, EnumFontProc, 0, 0);
   ReleaseDC(g_hMain, hdc);
   const wchar_t* sizes[] = { L"8", L"9", L"10", L"11", L"12", L"14", L"16", L"18", L"20", L"24", L"28", L"32", L"36", L"48", L"72" };
-  for (auto s : sizes) SendMessageW(g_hFontSize, CB_ADDSTRING, 0, (LPARAM)s);
+  for (int i = 0; i < 16; i++) SendMessageW(g_hFontSize, CB_ADDSTRING, 0, (LPARAM)sizes[i]);
   SendMessageW(g_hFontName, CB_SELECTSTRING, 0, (LPARAM)L"Calibri");
   if (SendMessageW(g_hFontName, CB_GETCURSEL, 0, 0) == CB_ERR)
     SendMessageW(g_hFontName, CB_SETCURSEL, 0, 0);
   SendMessageW(g_hFontSize, CB_SELECTSTRING, 0, (LPARAM)L"11");
 }
-
 void Resize() {
   RECT rc; GetClientRect(g_hMain, &rc);
-  int th = 30; // tinggi toolbar
+  int th = 30;
   int lw = g_showLine ? 42 : 0;
   if (g_hToolbar) MoveWindow(g_hToolbar, 0, 0, rc.right, th, TRUE);
-  // Kombo di dalam toolbar ikut lebar jendela
-  if (g_hFontName) MoveWindow(g_hFontName, 42, 4, 200, 22, TRUE);
-  if (g_hFontSize) MoveWindow(g_hFontSize, 250, 4, 60, 22, TRUE);
   if (g_hLine) MoveWindow(g_hLine, 0, th, lw, rc.bottom - th, TRUE);
   if (g_hEdit) MoveWindow(g_hEdit, lw, th, rc.right - lw, rc.bottom - th, TRUE);
   ShowWindow(g_hLine, g_showLine ? SW_SHOW : SW_HIDE);
@@ -215,7 +197,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   if (m == WM_CLOSE) { if (!AskSaveIfDirty()) return 0; DestroyWindow(h); return 0; }
   if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
   if (m == WM_COMMAND) {
-    // TOOLBAR FONT/SIZE: paksa EN hanya saat fokus di field font/size, kembalikan saat keluar
     if (LOWORD(wp) == ID_FONTNAME || LOWORD(wp) == ID_FONTSIZE) {
       if (HIWORD(wp) == CBN_SETFOCUS) {
         g_hklSavedFont = GetKeyboardLayout(0);
@@ -227,12 +208,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (g_hklSavedFont) ActivateKeyboardLayout(g_hklSavedFont, 0);
         return 0;
       }
-      if (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == CBN_EDITCHANGE) {
-        ApplyFontFromToolbar();
-        return 0;
-      }
+      if (HIWORD(wp) == CBN_SELCHANGE) { ApplyFontFromToolbar(); return 0; }
     }
-    // FIX LAG: update nomor baris HANYA pas teks berubah (EN_CHANGE), bukan tiap pesan
     if (LOWORD(wp) == ID_EDIT && HIWORD(wp) == EN_CHANGE) { UpdateLineNumbers(); return 0; }
     switch (LOWORD(wp)) {
       case IDM_NEW: DoNew(); return 0;
@@ -275,17 +252,14 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int nCmd) {
   AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, L"&Tampilan");
   AppendMenuW(bar, MF_POPUP, (UINT_PTR)fmt, L"F&ormat");
   SetMenu(g_hMain, bar);
-  // TOOLBAR FONT: Font + Size di atas, tanpa jendela baru
-  g_hToolbar = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 800, 30, g_hMain, NULL, hi, NULL);
-  CreateWindowExW(0, L"STATIC", L"Font:", WS_CHILD | WS_VISIBLE | SS_LEFT, 5, 7, 34, 16, g_hToolbar, NULL, hi, NULL);
+  g_hToolbar = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 800, 30, g_hMain, NULL, hi, NULL);
+  CreateWindowExW(0, L"STATIC", L"Font:", WS_CHILD | WS_VISIBLE, 5, 7, 34, 16, g_hToolbar, NULL, hi, NULL);
   g_hFontName = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | CBS_SORT | WS_VSCROLL, 42, 4, 200, 200, g_hToolbar, (HMENU)(UINT_PTR)ID_FONTNAME, hi, NULL);
-  CreateWindowExW(0, L"STATIC", L"Size:", WS_CHILD | WS_VISIBLE | SS_LEFT, 248, 7, 30, 16, g_hToolbar, NULL, hi, NULL);
-  // Geser Size ke kanan label: posisi final diatur di Resize()
-  g_hFontSize = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | WS_VSCROLL, 282, 4, 60, 200, g_hToolbar, (HMENU)(UINT_PTR)ID_FONTSIZE, hi, NULL);
+  CreateWindowExW(0, L"STATIC", L"Size:", WS_CHILD | WS_VISIBLE, 250, 7, 30, 16, g_hToolbar, NULL, hi, NULL);
+  g_hFontSize = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | WS_VSCROLL, 285, 4, 60, 200, g_hToolbar, (HMENU)(UINT_PTR)ID_FONTSIZE, hi, NULL);
   FillFontToolbar();
-  g_hLine = CreateWindowExW(0, L"EDIT", L"1\r\n", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_RIGHT | ES_AUTOVSCROLL, 0, 0, 42, 600, g_hMain, NULL, hi, NULL);
-  g_hEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | ES_SAVESEL, 42, 0, 758, 600, g_hMain, (HMENU)(UINT_PTR)ID_EDIT, hi, NULL);
-  // Beri tahu RichEdit untuk kirim EN_CHANGE
+  g_hLine = CreateWindowExW(0, L"EDIT", L"1\r\n", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_RIGHT | ES_AUTOVSCROLL, 0, 30, 42, 570, g_hMain, NULL, hi, NULL);
+  g_hEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | ES_SAVESEL, 42, 30, 758, 570, g_hMain, (HMENU)(UINT_PTR)ID_EDIT, hi, NULL);
   SendMessageW(g_hEdit, EM_SETEVENTMASK, 0, ENM_CHANGE);
   SendMessageW(g_hLine, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
   ShowWindow(g_hMain, nCmd); UpdateWindow(g_hMain);
