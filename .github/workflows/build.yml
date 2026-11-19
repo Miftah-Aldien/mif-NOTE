@@ -5,28 +5,48 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: Download Scintilla (mesin Notepad++)
+
+      - name: Download Scintilla source
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://www.scintilla.org/scintilla541.zip" -OutFile scintilla.zip
-          Expand-Archive scintilla.zip -DestinationPath scintilla -Force
-          dir scintilla
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri "https://github.com/mirror/scintilla/archive/refs/tags/v5.4.1.zip" -OutFile scintilla.zip
+          Expand-Archive scintilla.zip -DestinationPath scintilla-src -Force
+          Get-ChildItem scintilla-src | Select-Object Name
+
+      - name: Build SciLexer.dll (mesin Notepad++)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = Get-ChildItem "C:/Program Files/Microsoft Visual Studio/*/Enterprise/MSBuild/Current/Bin/MSBuild.exe" | Select-Object -First 1
+          if (-not $msbuild) { $msbuild = Get-ChildItem "C:/Program Files/Microsoft Visual Studio/*/Community/MSBuild/Current/Bin/MSBuild.exe" | Select-Object -First 1 }
+          Write-Host "MSBuild: $($msbuild.FullName)"
+          & $msbuild.FullName scintilla-src/scintilla-5.4.1/win32/SciLexer.vcxproj /p:Configuration=Release /p:Platform=x64
+          Get-ChildItem scintilla-src/scintilla-5.4.1/bin -Filter "*.dll" | Select-Object FullName
+
       - name: Configure CMake
         shell: pwsh
         run: |
-          cmake -S . -B build -A x64
-      - name: Build
+          $ErrorActionPreference = 'Stop'
+          cmake -S . -B build -A x64 -DSCINTILLA_ROOT="$PWD/scintilla-src/scintilla-5.4.1"
+          Get-ChildItem build
+
+      - name: Build mif-NOTE
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           cmake --build build --config Release
-      - name: Copy SciLexer.dll
+          Get-ChildItem build/Release
+
+      - name: Copy SciLexer.dll next to EXE
         shell: pwsh
         run: |
-          Copy-Item scintilla/bin/SciLexer.dll build/Release/ -ErrorAction SilentlyContinue
-          dir build/Release
+          Copy-Item scintilla-src/scintilla-5.4.1/bin/SciLexer.dll build/Release/SciLexer.dll -Force
+          Get-ChildItem build/Release
+
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
