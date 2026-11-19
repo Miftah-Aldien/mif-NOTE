@@ -11,7 +11,7 @@ jobs:
       - name: Configure CMake (Win32 / x86 untuk EeePC 32-bit)
         shell: pwsh
         run: cmake -S . -B build -A Win32
-      - name: Build mif-NOTE (x86)
+      - name: Build mif-NOTE (x86, static - tanpa MSVCP140.dll)
         shell: pwsh
         run: |
           cmake --build build --config Release
